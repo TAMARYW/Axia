@@ -1,0 +1,15 @@
+{
+  "model": "XGBoost (isotonic-calibrated)",
+  "n_samples": 6819,
+  "n_features": 95,
+  "class_balance": {
+    "stable": 6599,
+    "at_risk": 220
+  },
+  "decision_threshold": 0.125,
+  "roc_auc": 0.9575,
+  "recall_at_risk": 0.7955,
+  "precision_at_risk": 0.35,
+  "f1_at_risk": 0.4861,
+  "accuracy_note": "Raw accuracy is intentionally not the headline metric: with a 96.8% majority class, accuracy is misleading."
+}

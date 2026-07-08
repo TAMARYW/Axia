@@ -1,47 +1,38 @@
 """
 news_scraper.py
 ---------------
-Scrapes financial news headlines for a given company name or stock symbol
-from a curated list of reliable RSS feeds.
+Fetches financial news headlines for a given company from public RSS feeds.
 
-Strategy:
-  - Query up to 3 RSS sources per company
-  - Filter headlines that mention the company name or symbol
-  - Return up to MAX_HEADLINES results
-  - If nothing is found, return an empty list (caller handles gracefully)
+Freshness guarantee:
+  * Every item's pubDate is parsed (robustly, via email.utils).
+  * Only headlines published within the last NEWS_WINDOW_DAYS days
+    (default 3, configured in src/config.py) are kept.
+  * Each returned item carries `age_days`, used downstream by the
+    sentiment engine for exponential recency weighting, and the
+    scraper reports the exact date window used so the report can state
+    "based on news from <start> to <end>".
 
-No API keys required — uses public RSS feeds only.
+No API keys required - public RSS feeds only.
 """
 
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
-# Maximum headlines to collect per company (keeps report concise)
-MAX_HEADLINES = 10
+from src.config import MAX_HEADLINES, NEWS_WINDOW_DAYS
 
-# Curated list of financial RSS feeds (public, no authentication needed)
 RSS_FEEDS = [
-    {
-        "source": "Reuters Business",
-        "url":    "https://feeds.reuters.com/reuters/businessNews",
-    },
-    {
-        "source": "CNBC Finance",
-        "url":    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    },
-    {
-        "source": "MarketWatch",
-        "url":    "https://feeds.marketwatch.com/marketwatch/topstories/",
-    },
-    {
-        "source": "Yahoo Finance",
-        "url":    "https://finance.yahoo.com/rss/",
-    },
-    {
-        "source": "Investing.com",
-        "url":    "https://www.investing.com/rss/news.rss",
-    },
+    {"source": "Reuters Business",
+     "url": "https://feeds.reuters.com/reuters/businessNews"},
+    {"source": "CNBC Finance",
+     "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"},
+    {"source": "MarketWatch",
+     "url": "https://feeds.marketwatch.com/marketwatch/topstories/"},
+    {"source": "Yahoo Finance",
+     "url": "https://finance.yahoo.com/rss/"},
+    {"source": "Investing.com",
+     "url": "https://www.investing.com/rss/news.rss"},
 ]
 
 HEADERS = {
@@ -57,43 +48,45 @@ TIMEOUT_SECONDS = 6
 
 class NewsScraper:
 
-    def __init__(self, max_headlines: int = MAX_HEADLINES):
+    def __init__(self,
+                 max_headlines: int = MAX_HEADLINES,
+                 window_days: int = NEWS_WINDOW_DAYS):
         self.max_headlines = max_headlines
+        self.window_days   = window_days
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def fetch_headlines(self, company_name: str, symbol: str = "") -> list[dict]:
+    def fetch_headlines(self, company_name: str, symbol: str = "") -> dict:
         """
-        Fetches relevant financial headlines for a given company.
-
-        Parameters
-        ----------
-        company_name : str
-            Full company name (e.g. "Apple")
-        symbol : str
-            Stock ticker symbol (e.g. "AAPL") — optional but improves matching
+        Fetches company-relevant headlines published within the window.
 
         Returns
         -------
-        list of dicts:
-            [{"headline": str, "source": str, "published": str}, ...]
-            Returns empty list if no relevant headlines found or all feeds fail.
+        dict:
+            headlines    list[dict]  each: headline, source, published,
+                                     published_dt (ISO), age_days
+            window_days  int
+            window_start str  (YYYY-MM-DD)
+            window_end   str  (YYYY-MM-DD)
         """
-        keywords = self._build_keywords(company_name, symbol)
+        now    = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=self.window_days)
+
+        keywords  = self._build_keywords(company_name, symbol)
         collected = []
 
         for feed in RSS_FEEDS:
             if len(collected) >= self.max_headlines:
                 break
+            collected.extend(
+                self._fetch_feed(feed["source"], feed["url"], keywords, cutoff, now)
+            )
 
-            headlines = self._fetch_feed(feed["source"], feed["url"], keywords)
-            collected.extend(headlines)
-
-        # Deduplicate by headline text and cap at max
-        seen = set()
-        unique = []
+        # Deduplicate by headline text, newest first, cap at max
+        seen, unique = set(), []
+        collected.sort(key=lambda x: x["age_days"])
         for item in collected:
             if item["headline"] not in seen:
                 seen.add(item["headline"])
@@ -101,95 +94,93 @@ class NewsScraper:
             if len(unique) >= self.max_headlines:
                 break
 
-        return unique
+        return {
+            "headlines":    unique,
+            "window_days":  self.window_days,
+            "window_start": cutoff.strftime("%Y-%m-%d"),
+            "window_end":   now.strftime("%Y-%m-%d"),
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _build_keywords(self, company_name: str, symbol: str) -> list[str]:
-        """Builds a list of search terms to match against headlines."""
         keywords = [company_name.lower().strip()]
-
-        # Add individual words from multi-word company names (min 4 chars)
         for word in company_name.split():
             if len(word) >= 4:
                 keywords.append(word.lower())
-
         if symbol:
-            keywords.append(symbol.upper())
             keywords.append(symbol.lower())
+        return list(set(k for k in keywords if k))
 
-        return list(set(keywords))
-
-    def _fetch_feed(self, source: str, url: str, keywords: list[str]) -> list[dict]:
-        """
-        Fetches and parses a single RSS feed.
-        Returns matching headlines as a list of dicts.
-        Silently returns [] on any network or parse error.
-        """
+    def _fetch_feed(self, source: str, url: str, keywords: list[str],
+                    cutoff: datetime, now: datetime) -> list[dict]:
+        """Fetch one RSS feed; keep only fresh, relevant items."""
         try:
             request  = urllib.request.Request(url, headers=HEADERS)
             response = urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS)
-            content  = response.read()
-            root     = ET.fromstring(content)
+            root     = ET.fromstring(response.read())
         except Exception:
             return []
 
         results = []
-
-        # RSS items are under channel > item
         for item in root.iter("item"):
-            title       = item.findtext("title") or ""
-            pub_date    = item.findtext("pubDate") or ""
-
+            title    = (item.findtext("title") or "").strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
             if not title:
                 continue
 
-            # Keep headline only if it mentions the company
-            if any(kw in title.lower() for kw in keywords):
-                results.append({
-                    "headline":  title.strip(),
-                    "source":    source,
-                    "published": self._format_date(pub_date),
-                })
+            published_dt = self._parse_date(pub_date)
 
+            # Freshness filter: skip anything outside the window.
+            # Items with an unparseable date are skipped too - we cannot
+            # guarantee they are fresh, and the product promise is
+            # "data from the last N days".
+            if published_dt is None or published_dt < cutoff:
+                continue
+
+            if any(kw in title.lower() for kw in keywords):
+                age_days = max((now - published_dt).total_seconds() / 86400, 0.0)
+                results.append({
+                    "headline":     title,
+                    "source":       source,
+                    "published":    published_dt.strftime("%Y-%m-%d %H:%M"),
+                    "published_dt": published_dt.isoformat(),
+                    "age_days":     round(age_days, 3),
+                })
         return results
 
-    def _format_date(self, raw_date: str) -> str:
-        """Converts RSS pubDate string to a clean readable format."""
-        formats = [
-            "%a, %d %b %Y %H:%M:%S %z",
-            "%a, %d %b %Y %H:%M:%S %Z",
-        ]
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(raw_date.strip(), fmt)
-                return dt.strftime("%Y-%m-%d %H:%M")
-            except ValueError:
-                continue
-        return raw_date.strip()
+    @staticmethod
+    def _parse_date(raw_date: str):
+        """
+        Parses an RSS pubDate into an aware UTC datetime.
+        email.utils.parsedate_to_datetime handles the RFC-2822 formats
+        used by virtually all RSS feeds, including timezone names.
+        Returns None if parsing fails.
+        """
+        if not raw_date:
+            return None
+        try:
+            dt = parsedate_to_datetime(raw_date)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
 
 
-# ------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Quick self-test
-# ------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 if __name__ == "__main__":
     scraper = NewsScraper()
-
-    test_companies = [
-        ("Apple", "AAPL"),
-        ("Tesla", "TSLA"),
-        ("Microsoft", "MSFT"),
-    ]
-
-    for company, symbol in test_companies:
-        print(f"\n🔍 Searching headlines for: {company} ({symbol})")
-        headlines = scraper.fetch_headlines(company, symbol)
-
-        if not headlines:
-            print("  ⚠️  No headlines found — sentiment section will be skipped in report.")
-        else:
-            for h in headlines:
-                print(f"  [{h['source']}] {h['headline']} ({h['published']})")
+    for company, symbol in [("Apple", "AAPL"), ("Tesla", "TSLA")]:
+        print(f"\nSearching headlines for: {company} ({symbol})")
+        result = scraper.fetch_headlines(company, symbol)
+        print(f"  Window: {result['window_start']} -> {result['window_end']}")
+        if not result["headlines"]:
+            print("  No fresh headlines found within the window.")
+        for h in result["headlines"]:
+            print(f"  [{h['source']}] ({h['age_days']:.1f}d ago) {h['headline']}")

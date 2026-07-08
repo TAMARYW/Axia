@@ -1,14 +1,18 @@
 """
 app.py
 ------
-Streamlit web interface for FinBotX.
+Streamlit web client for FinBotX.
 
-Features:
-  - Manual data entry form grouped by financial category
-  - Excel file upload (auto-maps column names)
-  - Validates critical fields before running prediction
-  - Runs full analysis pipeline and displays the HTML report inline
-  - Download button for the generated report
+Flow (matches the product spec):
+  1. Enter company name (+ optional stock symbol)
+  2. Upload an Excel file with the company's financial data
+     (manual entry was removed by design - Excel is the single source)
+  3. Choose the sentiment source:
+        - Fetch fresh headlines from financial news feeds (last 3 days), or
+        - Upload a text file of opinions (one per line)
+  4. Generate: calibrated resilience prediction -> credit-style rating
+     (A+ ... D) -> SHAP drivers -> recency-weighted sentiment ->
+     full downloadable HTML report.
 
 Run:
     streamlit run app.py
@@ -17,7 +21,6 @@ Run:
 import os
 import tempfile
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -25,14 +28,17 @@ from src.bankruptcy_engine import BankruptcyEngine
 from src.sentiment_engine  import SentimentEngine
 from src.news_scraper      import NewsScraper
 from src.report_generator  import ReportGenerator
-from src.column_mapping    import FEATURE_GROUPS, CRITICAL_FEATURES, ALL_FEATURES
+from src.column_mapping    import ALL_FEATURES, CRITICAL_FEATURES
+from src.config            import NEWS_WINDOW_DAYS, RATING_DICTIONARY
+
+LOGO_PATH = os.path.join("assets", "logo.png")
 
 # ------------------------------------------------------------------
 # Page config
 # ------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="FinBotX — Financial AI",
+    page_title="FinBotX - Financial Resilience AI",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -52,49 +58,33 @@ st.markdown("""
     background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
     border: 1px solid #334155;
     border-radius: 16px;
-    padding: 2.5rem 2rem;
+    padding: 2rem;
     margin-bottom: 2rem;
     text-align: center;
   }
   .main-header h1 {
     font-family: "DM Serif Display", serif;
-    font-size: 2.8rem;
+    font-size: 2.6rem;
     color: white;
     margin: 0;
     letter-spacing: -1px;
   }
-  .main-header p {
-    color: #94a3b8;
-    font-size: 1rem;
-    margin-top: 0.5rem;
-  }
-  .section-label {
-    font-family: "DM Mono", monospace;
-    font-size: 0.7rem;
-    color: #6366f1;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin-bottom: 0.3rem;
-  }
-  .critical-note {
+  .main-header p { color: #94a3b8; font-size: 1rem; margin-top: 0.5rem; }
+
+  .note {
     background: #1e293b;
     border-left: 3px solid #6366f1;
     border-radius: 0 8px 8px 0;
     padding: 0.7rem 1rem;
     font-size: 0.85rem;
     color: #94a3b8;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.2rem;
   }
   .stButton > button {
     background: linear-gradient(135deg, #6366f1, #4f46e5);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-family: "DM Sans", sans-serif;
-    font-weight: 600;
-    font-size: 1rem;
-    padding: 0.7rem 2rem;
-    width: 100%;
+    color: white; border: none; border-radius: 8px;
+    font-family: "DM Sans", sans-serif; font-weight: 600;
+    font-size: 1rem; padding: 0.7rem 2rem; width: 100%;
     transition: opacity 0.2s;
   }
   .stButton > button:hover { opacity: 0.88; }
@@ -102,14 +92,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# Engine loader (cached — runs only once per session)
+# Engine loader (cached - runs once per session)
 # ------------------------------------------------------------------
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Loading AI engines...")
 def load_engines():
     bankruptcy = BankruptcyEngine()
     bankruptcy.load_model()
-    sentiment  = SentimentEngine()
+    sentiment = SentimentEngine()
     sentiment.load_model()
     return {
         "bankruptcy": bankruptcy,
@@ -119,54 +109,50 @@ def load_engines():
     }
 
 # ------------------------------------------------------------------
-# Helper: collect form values into a flat dict
+# Excel parsing with tolerant name matching
 # ------------------------------------------------------------------
 
-def collect_form_values(form_inputs: dict) -> dict:
-    """Converts raw form widget values to float (None if empty)."""
-    result = {}
-    for feature, value in form_inputs.items():
-        if value == "" or value is None:
-            result[feature] = None
-        else:
-            try:
-                result[feature] = float(value)
-            except (ValueError, TypeError):
-                result[feature] = None
-    return result
+def _normalize(name: str) -> str:
+    """
+    Normalizes a feature name so users can write headers naturally.
+    'ROA Before Tax C', 'roa_before_tax_c' and 'Roa before tax c'
+    all map to the same key.
+    """
+    return (str(name).strip().lower()
+            .replace("-", " ").replace("/", " ")
+            .replace("  ", " ").replace(" ", "_"))
 
-# ------------------------------------------------------------------
-# Helper: parse uploaded Excel
-# ------------------------------------------------------------------
+
+_NORMALIZED_FEATURES = {_normalize(f): f for f in ALL_FEATURES}
+
 
 def parse_excel(uploaded_file) -> dict:
     """
-    Reads an Excel file where:
-      Row 1 = feature names  (matching ALL_FEATURES clean English names)
-      Row 2 = values
-
-    OR a two-column layout:
-      Column A = feature name
-      Column B = value
+    Accepts either layout:
+      Wide: Row 1 = feature names, Row 2 = values
+      Tall: Column A = feature name, Column B = value
+    Feature names are matched case/format-insensitively.
     """
     df = pd.read_excel(uploaded_file)
 
-    # Detect layout
+    # Tall layout detection: first column holds feature names
     if df.shape[0] >= 1 and df.shape[1] >= 2:
-        first_col_vals = df.iloc[:, 0].astype(str).str.lower().tolist()
-        # Two-column layout: first column contains feature names
-        if any(f in first_col_vals for f in ALL_FEATURES):
-            df.columns = ["feature", "value"]
-            mapping = dict(zip(df["feature"].astype(str).str.strip(),
-                               df["value"]))
-            return {k: v for k, v in mapping.items() if k in ALL_FEATURES}
+        first_col_norm = [_normalize(v) for v in df.iloc[:, 0]]
+        matches = sum(1 for v in first_col_norm if v in _NORMALIZED_FEATURES)
+        if matches >= 3:  # clearly a tall layout
+            data = {}
+            for raw_name, value in zip(df.iloc[:, 0], df.iloc[:, 1]):
+                key = _NORMALIZED_FEATURES.get(_normalize(raw_name))
+                if key is not None and pd.notna(value):
+                    data[key] = float(value)
+            return data
 
-    # Wide layout: first row = headers, second row = values
+    # Wide layout: headers are feature names
     data = {}
     for col in df.columns:
-        col_clean = str(col).strip()
-        if col_clean in ALL_FEATURES and not df[col].empty:
-            data[col_clean] = df[col].iloc[0]
+        key = _NORMALIZED_FEATURES.get(_normalize(col))
+        if key is not None and not df[col].empty and pd.notna(df[col].iloc[0]):
+            data[key] = float(df[col].iloc[0])
     return data
 
 # ------------------------------------------------------------------
@@ -177,234 +163,274 @@ def run_app(engines: dict = None):
     if engines is None:
         engines = load_engines()
 
-    # ── Header ──────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="main-header">
-      <h1>📊 FinBotX</h1>
-      <p>Financial Resilience &amp; Market Sentiment AI · Academic Research System</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # -- Header with logo ------------------------------------------------
+    col_logo, col_title = st.columns([1, 4])
+    with col_logo:
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, width=170)
+    with col_title:
+        st.markdown("""
+        <div class="main-header">
+          <h1>FinBotX</h1>
+          <p>Financial Resilience Prediction &amp; Market Sentiment AI</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # ── Sidebar ─────────────────────────────────────────────────────
+    # -- Sidebar ----------------------------------------------------------
     with st.sidebar:
-        st.markdown("### ⚙️ Analysis Settings")
+        if os.path.exists(LOGO_PATH):
+            st.image(LOGO_PATH, use_container_width=True)
+        st.markdown("### Analysis Settings")
 
         company_name = st.text_input(
             "Company Name",
-            placeholder="e.g. Apple, Tesla …",
-            help="Used to search for relevant news headlines"
+            placeholder="e.g. Apple, Tesla ...",
+            help="Used to search for relevant news headlines",
         )
         stock_symbol = st.text_input(
             "Stock Symbol (optional)",
             placeholder="e.g. AAPL, TSLA",
-            help="Improves news search accuracy"
+            help="Improves news search accuracy",
         )
 
         st.divider()
-        input_mode = st.radio(
-            "Data Input Method",
-            ["✏️  Manual Entry", "📂  Upload Excel"],
-            index=0
+        sentiment_source = st.radio(
+            "Sentiment Source",
+            ["Fetch from news feeds (API)", "Upload opinions text file"],
+            help=(f"News feeds return headlines from the last "
+                  f"{NEWS_WINDOW_DAYS} days only, weighted by recency."),
         )
 
+        opinions_file = None
+        if sentiment_source.startswith("Upload"):
+            opinions_file = st.file_uploader(
+                "Opinions file (.txt, one opinion per line)", type=["txt"]
+            )
+
         st.divider()
-        st.markdown("""
+        m = engines["bankruptcy"].metrics
+        st.markdown(f"""
         <div style="font-size:0.78rem;color:#64748b;line-height:1.7">
-        <strong style="color:#94a3b8">Model Info</strong><br/>
-        Financial: Random Forest<br/>
-        Accuracy: 97.36%<br/><br/>
-        Sentiment: Logistic Regression<br/>
-        Accuracy: 88.08%<br/><br/>
-        Dataset: 6,819 companies<br/>
-        Features: 95 financial ratios
+        <strong style="color:#94a3b8">Model Info (held-out test set)</strong><br/>
+        Financial: {m.get('model', 'Calibrated XGBoost')}<br/>
+        ROC-AUC: {m.get('roc_auc', '-')}<br/>
+        At-risk recall: {m.get('recall_at_risk', '-')}<br/>
+        At-risk precision: {m.get('precision_at_risk', '-')}<br/>
+        Decision threshold: {m.get('decision_threshold', '-')}<br/><br/>
+        Sentiment: Logistic Regression + TF-IDF<br/>
+        News window: last {NEWS_WINDOW_DAYS} days
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Input area ──────────────────────────────────────────────────
-    form_values = {}
+    # -- Rating scale dictionary -------------------------------------------
+    with st.expander("Rating scale dictionary (A+ ... D)"):
+        legend_df = pd.DataFrame(
+            [(g, i["range"], i["meaning"]) for g, i in RATING_DICTIONARY.items()],
+            columns=["Grade", "Stability Range", "Meaning"],
+        )
+        st.dataframe(legend_df, use_container_width=True, hide_index=True)
 
-    if "✏️" in input_mode:
-        st.markdown('<div class="critical-note">⭐ <strong>Bold fields are critical</strong> — must be filled for a valid prediction. All other fields are optional.</div>', unsafe_allow_html=True)
+    # -- Excel upload -------------------------------------------------------
+    st.markdown("#### Upload Financial Data (Excel)")
+    st.markdown(f"""
+    <div class="note">
+      Your Excel file should follow one of these layouts:<br/>
+      &nbsp;&nbsp;<strong>Wide:</strong> Row 1 = feature names, Row 2 = values<br/>
+      &nbsp;&nbsp;<strong>Tall:</strong> Column A = feature name, Column B = value<br/>
+      Feature names are matched flexibly ("Debt Ratio" = "debt_ratio").
+      {len(CRITICAL_FEATURES)} critical features are required for a valid prediction.
+    </div>
+    """, unsafe_allow_html=True)
 
-        tab_names = list(FEATURE_GROUPS.keys())
-        tabs = st.tabs(tab_names)
+    form_values: dict = {}
+    uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"])
+    if uploaded:
+        try:
+            parsed = parse_excel(uploaded)
+            if parsed:
+                st.success(f"Loaded {len(parsed)} features from file.")
+                form_values = parsed
+                with st.expander("Preview loaded data"):
+                    preview_df = pd.DataFrame(
+                        [(k.replace("_", " ").title(), v) for k, v in parsed.items()],
+                        columns=["Feature", "Value"],
+                    )
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning(
+                    "No matching feature columns found. Check that headers "
+                    "use the feature names shown in the rating dictionary "
+                    "documentation (flexible formats accepted)."
+                )
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
 
-        for tab, (group_name, features) in zip(tabs, FEATURE_GROUPS.items()):
-            with tab:
-                cols = st.columns(3)
-                for i, feature in enumerate(features):
-                    label = feature.replace("_", " ").title()
-                    is_critical = feature in CRITICAL_FEATURES
-                    display_label = f"**{label}**" if is_critical else label
-                    with cols[i % 3]:
-                        val = st.text_input(
-                            display_label,
-                            key=f"field_{group_name}_{feature}",
-                            placeholder="e.g. 0.35",
-                            help="Critical field — required" if is_critical else "Optional"
-                        )
-                        form_values[feature] = val
-
-    else:
-        st.markdown("#### 📂 Upload Excel File")
-        st.markdown("""
-        <div class="critical-note">
-        Your Excel file should have one of these layouts:<br/>
-        &nbsp;&nbsp;<strong>Wide:</strong> Row 1 = feature names, Row 2 = values<br/>
-        &nbsp;&nbsp;<strong>Tall:</strong> Column A = feature name, Column B = value
-        </div>
-        """, unsafe_allow_html=True)
-
-        uploaded = st.file_uploader("Choose Excel file", type=["xlsx", "xls"])
-        if uploaded:
-            try:
-                parsed = parse_excel(uploaded)
-                if parsed:
-                    st.success(f"✅ Loaded {len(parsed)} features from file.")
-                    form_values = {k: str(v) for k, v in parsed.items()}
-
-                    with st.expander("Preview loaded data"):
-                        preview_df = pd.DataFrame(
-                            [(k.replace("_"," ").title(), v)
-                             for k, v in parsed.items()],
-                            columns=["Feature", "Value"]
-                        )
-                        st.dataframe(preview_df, use_container_width=True)
-                else:
-                    st.warning("⚠️ No matching feature columns found. Check column names.")
-            except Exception as e:
-                st.error(f"Error reading file: {e}")
-
-    # ── Run analysis button ─────────────────────────────────────────
+    # -- Run button ----------------------------------------------------------
     st.divider()
     run_col, _ = st.columns([1, 2])
     with run_col:
-        run_clicked = st.button("🚀 Generate Financial Report")
+        run_clicked = st.button("Generate Financial Report")
 
-    if run_clicked:
-        if not company_name.strip():
-            st.error("Please enter a company name in the sidebar.")
-            st.stop()
+    if not run_clicked:
+        return
 
-        # Collect and validate
-        collected = collect_form_values(form_values)
-        is_valid, missing = engines["bankruptcy"].validate_input(collected)
+    if not company_name.strip():
+        st.error("Please enter a company name in the sidebar.")
+        st.stop()
+    if not form_values:
+        st.error("Please upload an Excel file with the company's financial data.")
+        st.stop()
 
-        if not is_valid:
-            missing_labels = [m.replace("_", " ").title() for m in missing]
-            st.error(
-                "⚠️ Missing critical fields: " +
-                ", ".join(missing_labels) +
-                ". Please fill them in before running the analysis."
-            )
-            st.stop()
+    is_valid, missing = engines["bankruptcy"].validate_input(form_values)
+    if not is_valid:
+        st.error(
+            "Missing critical fields: "
+            + ", ".join(mfield.replace("_", " ").title() for mfield in missing)
+            + ". Please add them to your Excel file."
+        )
+        st.stop()
 
-        # Build input DataFrame
-        input_df = pd.DataFrame([{
-            f: (collected.get(f) if collected.get(f) is not None else 0.0)
-            for f in ALL_FEATURES
-        }])
+    input_df = pd.DataFrame([{
+        f: (form_values.get(f) if form_values.get(f) is not None else 0.0)
+        for f in ALL_FEATURES
+    }])
 
-        with st.spinner("🔍 Running financial analysis..."):
+    with st.spinner("Running financial analysis..."):
 
-            # 1. Financial prediction
-            prediction = engines["bankruptcy"].predict(input_df)
+        # 1. Financial prediction (calibrated) + rating
+        prediction = engines["bankruptcy"].predict(input_df)
 
-            # 2. News scraping
-            headlines = engines["scraper"].fetch_headlines(
+        # 2. Sentiment inputs: API headlines or uploaded opinions
+        sentiment_results, ages, news_window = [], None, None
+        source_key = "none"
+
+        if sentiment_source.startswith("Fetch"):
+            source_key = "news_api"
+            news_data  = engines["scraper"].fetch_headlines(
                 company_name.strip(), stock_symbol.strip()
             )
-
-            # 3. Sentiment analysis
-            sentiment_results = []
+            news_window = news_data
+            headlines   = news_data["headlines"]
             if headlines:
-                texts  = [h["headline"] for h in headlines]
-                scores = engines["sentiment"].analyze_batch(texts)
+                scores = engines["sentiment"].analyze_batch(
+                    [h["headline"] for h in headlines]
+                )
+                ages = [h["age_days"] for h in headlines]
                 for h, s in zip(headlines, scores):
-                    sentiment_results.append({
-                        "headline":   h["headline"],
-                        "source":     h["source"],
-                        "published":  h["published"],
-                        "label":      s["label"],
-                        "confidence": s["confidence"],
-                        "scores":     s["scores"],
-                    })
+                    sentiment_results.append({**h, **s})
 
-            # 4. Generate report
-            submitted_clean = {
-                k: v for k, v in collected.items() if v is not None
-            }
-            with tempfile.NamedTemporaryFile(
-                suffix=".html", delete=False, mode="w", encoding="utf-8"
-            ) as tmp:
-                report_path = tmp.name
+        elif opinions_file is not None:
+            source_key = "uploaded_file"
+            lines = [
+                ln.strip() for ln in
+                opinions_file.read().decode("utf-8", errors="ignore").splitlines()
+                if ln.strip()
+            ]
+            if lines:
+                scores = engines["sentiment"].analyze_batch(lines)
+                for text, s in zip(lines, scores):
+                    sentiment_results.append(
+                        {"headline": text, "source": "Uploaded file",
+                         "published": "-", **s}
+                    )
 
-            engines["report"].generate(
-                company_name    = company_name.strip(),
-                prediction_result = prediction,
-                sentiment_results = sentiment_results,
-                submitted_data  = submitted_clean,
-                output_path     = report_path,
-            )
+        # 3. Aggregate recency-weighted sentiment score
+        sentiment_agg = SentimentEngine.aggregate_score(sentiment_results, ages)
 
-        # ── Results summary ────────────────────────────────────────
-        st.success("✅ Analysis complete!")
+        # 4. Generate report
+        with tempfile.NamedTemporaryFile(
+            suffix=".html", delete=False, mode="w", encoding="utf-8"
+        ) as tmp:
+            report_path = tmp.name
 
-        risk_label = prediction["risk_label"]
-        risk_color = {"Low": "#22c55e", "Medium": "#f59e0b", "High": "#ef4444"}[risk_label]
+        engines["report"].generate(
+            company_name      = company_name.strip(),
+            prediction_result = prediction,
+            sentiment_results = sentiment_results,
+            sentiment_agg     = sentiment_agg,
+            news_window       = news_window,
+            sentiment_source  = source_key,
+            submitted_data    = form_values,
+            model_metrics     = engines["bankruptcy"].metrics,
+            output_path       = report_path,
+        )
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Risk Level",         risk_label)
-        col2.metric("Risk Score",         f"{prediction['risk_score']:.1%}")
-        col3.metric("Stability Score",    f"{prediction['stability_score']:.1%}")
-        col4.metric("Headlines Found",    len(sentiment_results))
+    # -- Results summary ---------------------------------------------------
+    st.success("Analysis complete!")
 
-        # ── SHAP top factors ────────────────────────────────────────
-        st.markdown("#### 🔍 Top Risk Drivers")
-        factors_df = pd.DataFrame(prediction["top_risk_factors"])
-        factors_df["feature"] = factors_df["feature"].str.replace("_", " ").str.title()
+    rating       = prediction["rating"]
+    rating_info  = RATING_DICTIONARY.get(rating, {})
+    rating_color = rating_info.get("color", "#6366f1")
+
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:1rem;margin:0.5rem 0 1rem 0">
+      <span style="font-family:'DM Mono',monospace;font-size:2.2rem;
+        font-weight:700;color:{rating_color};border:2px solid {rating_color};
+        border-radius:12px;padding:0.2rem 1.2rem">{rating}</span>
+      <span style="color:#94a3b8">{rating_info.get('meaning','')}
+        &middot; stability range {rating_info.get('range','')}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Stability (calibrated)", f"{prediction['stability_score']:.1%}")
+    col2.metric("Risk probability",       f"{prediction['risk_score']:.1%}")
+    col3.metric("Sentiment index",        f"{sentiment_agg['score_0_100']:.0f}/100"
+                if sentiment_agg["n_items"] else "N/A")
+    col4.metric("Texts analyzed",         sentiment_agg["n_items"])
+
+    # -- SHAP top factors ----------------------------------------------------
+    st.markdown("#### Key Risk Drivers (SHAP)")
+    factors_df = pd.DataFrame(prediction["top_risk_factors"])
+    if not factors_df.empty:
+        factors_df["feature"] = (factors_df["feature"]
+                                 .str.replace("_", " ").str.title())
         factors_df["direction"] = factors_df["shap_impact"].apply(
-            lambda x: "↑ Risk" if x > 0 else "↓ Stability"
+            lambda x: "Pushes toward risk" if x > 0 else "Pushes toward stability"
         )
         st.dataframe(
-            factors_df[["feature", "value", "shap_impact", "direction"]].rename(columns={
+            factors_df.rename(columns={
                 "feature": "Feature", "value": "Value",
-                "shap_impact": "SHAP Impact", "direction": "Direction"
+                "shap_impact": "SHAP Impact", "direction": "Direction",
             }),
-            use_container_width=True,
-            hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
-        # ── Sentiment summary ───────────────────────────────────────
-        if sentiment_results:
-            st.markdown("#### 📰 Sentiment Summary")
-            sent_df = pd.DataFrame(sentiment_results)[
-                ["headline", "label", "confidence", "source"]
-            ].rename(columns={
-                "headline": "Headline", "label": "Sentiment",
-                "confidence": "Confidence", "source": "Source"
-            })
-            st.dataframe(sent_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("ℹ️ No news headlines found — sentiment section skipped in report.")
+    # -- Sentiment summary -----------------------------------------------------
+    if sentiment_results:
+        window_note = ""
+        if news_window:
+            window_note = (f" (news from {news_window['window_start']} to "
+                           f"{news_window['window_end']}, recency-weighted)")
+        st.markdown(f"#### Sentiment Summary{window_note}")
+        sent_df = pd.DataFrame(sentiment_results)[
+            ["headline", "label", "confidence", "source", "published"]
+        ].rename(columns={
+            "headline": "Headline / Opinion", "label": "Sentiment",
+            "confidence": "Confidence", "source": "Source",
+            "published": "Published",
+        })
+        st.dataframe(sent_df, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"No opinions or fresh headlines (last {NEWS_WINDOW_DAYS} days) "
+                "found - the sentiment section is skipped in the report.")
 
-        # ── Download button ─────────────────────────────────────────
-        st.divider()
-        with open(report_path, "r", encoding="utf-8") as f:
-            report_html = f.read()
+    # -- Download + preview -------------------------------------------------------
+    st.divider()
+    with open(report_path, "r", encoding="utf-8") as f:
+        report_html = f.read()
 
-        st.download_button(
-            label     = "⬇️ Download Full HTML Report",
-            data      = report_html,
-            file_name = f"FinBotX_{company_name.replace(' ','_')}_Report.html",
-            mime      = "text/html",
-        )
+    st.download_button(
+        label     = "Download Full HTML Report",
+        data      = report_html,
+        file_name = f"FinBotX_{company_name.strip().replace(' ', '_')}_Report.html",
+        mime      = "text/html",
+    )
 
-        # Embed report preview
-        st.markdown("#### 📄 Report Preview")
-        st.components.v1.html(report_html, height=900, scrolling=True)
+    st.markdown("#### Report Preview")
+    st.components.v1.html(report_html, height=900, scrolling=True)
 
-        os.unlink(report_path)
+    os.unlink(report_path)
 
 
 # ------------------------------------------------------------------
