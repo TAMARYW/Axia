@@ -1,11 +1,14 @@
-# FinBotX — Financial Resilience Prediction & Market Sentiment AI
+# Axia — Financial Resilience Prediction & Market Sentiment AI
 
-FinBotX predicts a company's financial resilience from its financial ratios
+Axia predicts a company's financial resilience from its financial ratios
 and combines the prediction with a recency-weighted market-sentiment analysis,
 producing a professional, self-contained HTML report with a credit-style
 rating (A+ … D).
 
-![FinBotX](assets/logo.png)
+![Axia Logo](assets/logo.png)
+
+![Axia Dashboard Preview](assets/rating_dashboard.png)
+*The financial resilience dashboard showing the calibrated risk probability and credit-style rating (A+ ... D).*
 
 ## Architecture
 
@@ -23,7 +26,7 @@ rating (A+ … D).
 
 **Honest metrics, not vanity accuracy.** Only ~3.2% of companies in the
 Taiwan Economic Journal dataset are at risk, so a dummy "always stable"
-model scores ~96.8% accuracy. FinBotX therefore optimizes and reports
+model scores ~96.8% accuracy. Axia therefore optimizes and reports
 **recall / precision / ROC-AUC for the at-risk class** (metrics are written
 to `models/model_metrics.json` at training time and read dynamically by the
 UI — nothing is hard-coded).
@@ -58,6 +61,20 @@ also shown as a 0–100 index) is the weighted mean of per-item polarity
 P(positive) − P(negative). Alternatively, upload a `.txt` file of opinions
 (one per line) instead of using the news feeds.
 
+## Local Explainability (SHAP)
+
+Axia doesn't just output a score; it explains *why*. The model calculates SHAP (SHapley Additive exPlanations) values to highlight the specific financial indicators driving the company toward risk or stability.
+
+![SHAP Key Risk Drivers](assets/shap_drivers.png)
+*Local explainability via SHAP, demonstrating the top features influencing the specific prediction.*
+
+## NLP Market Sentiment
+
+By leveraging TF-IDF bigrams and Logistic Regression (trained with SMOTE for class imbalance), Axia contextualizes hard financial data with real-world market sentiment.
+
+![Media Sentiment Analysis](assets/sentiment_analysis.png)
+*Recency-weighted NLP sentiment analysis combining financial news or opinions into an aggregate risk index.*
+
 ## Setup
 
 ```bash
@@ -65,47 +82,10 @@ pip install -r requirements.txt
 python main.py            # validates data, trains models if missing, launches UI
 # or directly:
 streamlit run app.py
-```
 
-First launch trains both models automatically (~1–2 minutes); afterwards the
-saved artifacts in `models/` load instantly.
+## Authors
 
-## Using the app
+**Tamar Waiss** & **Rina Kimmel**
 
-1. Enter the company name (and optionally its stock symbol) in the sidebar.
-2. Upload an Excel file with the financial data. Two layouts are accepted:
-   - **Wide**: row 1 = feature names, row 2 = values
-   - **Tall**: column A = feature name, column B = value
-   Header matching is flexible — `Debt Ratio`, `debt_ratio` and
-   `debt-ratio` are all recognized. Sample files are in `templates/`.
-3. Choose the sentiment source: live news feeds (last 3 days) or an
-   uploaded opinions file.
-4. Generate the report: rating badge, calibrated probabilities, SHAP risk
-   drivers, sentiment section, and a downloadable HTML report.
-
-## Project structure
-
-```
-finbotx/
-├── app.py                     # Streamlit client
-├── main.py                    # Entry point (validation + engine warm-up)
-├── requirements.txt
-├── assets/logo.png
-├── data/
-│   ├── bankruptcy_data.csv    # Taiwan Economic Journal (6,819 companies)
-│   └── Sentences_AllAgree.txt # Financial PhraseBank v1.0
-├── models/                    # trained artifacts + model_metrics.json
-├── src/
-│   ├── config.py              # rating scale, news window, thresholds
-│   ├── column_mapping.py      # raw → clean feature names, groups, criticals
-│   ├── bankruptcy_engine.py
-│   ├── sentiment_engine.py
-│   ├── news_scraper.py
-│   └── report_generator.py
-└── templates/                 # sample Excel files + example report
-```
-
-## Disclaimer
-
-FinBotX is an academic machine-learning system and does not constitute
-financial advice.
+[![Tamar Waiss LinkedIn](https://img.shields.io/badge/Tamar_Waiss-Profile-blue?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/tamar-waiss)
+[![Rina Kimmel LinkedIn](https://img.shields.io/badge/Rina_Kimmel-Profile-blue?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/rina-kimmel-7963ba413)

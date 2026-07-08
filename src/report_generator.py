@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-from src.config import RATING_DICTIONARY
+from src.config import AUTHORS, COPYRIGHT_HOLDER, RATING_DICTIONARY
 
 SENTIMENT_COLORS = {
     "positive": "#22c55e",
@@ -264,7 +264,16 @@ class ReportGenerator:
             + '">' + sentiment_agg["label"].upper() + "</div>"
             '<div class="label">OVERALL TONE</div></div>'
             "</div>"
-            '<div class="two-col">'
+            + (
+                '<div style="border-left:3px solid #f59e0b;background:#0f172a;'
+                'border-radius:0 8px 8px 0;padding:0.6rem 1rem;margin:0.4rem 0 1rem 0;'
+                'font-size:0.82rem;color:#fbbf24">&#9888;&#65039; '
+                "Low sample &mdash; this analysis is based on only " + str(n)
+                + " text" + ("s" if n != 1 else "") + ". "
+                "Interpret the overall tone with caution.</div>"
+                if n < 3 else ""
+            )
+            + '<div class="two-col">'
             '<div><img src="data:image/png;base64,' + sent_img
             + '" style="width:100%;max-width:320px"/></div>'
             '<div><table class="data-table">'
@@ -302,13 +311,6 @@ class ReportGenerator:
             "Key indicators suggest potential vulnerability."
         )
 
-        recall    = model_metrics.get("recall_at_risk", "-")
-        precision = model_metrics.get("precision_at_risk", "-")
-        auc       = model_metrics.get("roc_auc", "-")
-        threshold = model_metrics.get("decision_threshold",
-                                      pred.get("threshold", "-"))
-        model_name = model_metrics.get("model", "Calibrated XGBoost")
-
         sentiment_html = self._sentiment_section(
             sentiment_results, sentiment_agg, news_window,
             sentiment_source, sent_img)
@@ -320,7 +322,7 @@ class ReportGenerator:
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>FinBotX Report &mdash; """ + company_name + """</title>
+  <title>Axia Report &mdash; """ + company_name + """</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -365,6 +367,11 @@ class ReportGenerator:
       font-weight:500; font-family:"DM Mono",monospace; font-size:0.75rem; }
     .data-table td { padding:0.45rem 0.7rem; border-bottom:1px solid #1e293b; }
     .data-table tr:hover td { background:#16213a; }
+    details > summary { cursor:pointer; list-style:none; }
+    details > summary::-webkit-details-marker { display:none; }
+    details > summary::after { content:"View Table"; float:right; color:var(--muted);
+      font-size:0.8rem; transition:transform 0.2s; }
+    details[open] > summary::after { transform:rotate(180deg); }
     footer { text-align:center; color:var(--muted); font-size:0.75rem;
       margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border); }
     @media (max-width:600px) {
@@ -379,14 +386,13 @@ class ReportGenerator:
   <div class="report-header">
     <div>
       <div style="color:var(--muted);font-family:'DM Mono',monospace;font-size:0.75rem;margin-bottom:0.4rem">
-        FINBOTX &middot; FINANCIAL RESILIENCE REPORT
+        Axia &middot; FINANCIAL RESILIENCE REPORT
       </div>
       <h1>""" + company_name + """</h1>
       <div class="meta">Generated """ + now_str + """</div>
     </div>
     <div style="text-align:right">
       <div class="badge">RATING: """ + rating + """</div>
-      <div class="meta" style="margin-top:0.5rem">""" + model_name + """</div>
     </div>
   </div>
 
@@ -416,56 +422,48 @@ class ReportGenerator:
   </section>
 
   <section class="card">
-    <h2>&#128218; Rating Scale</h2>
-    <p class="subtitle">How to read the grade &mdash; the highlighted row is this company's rating. Grades are driven by the calibrated stability probability.</p>
-    <table class="data-table">
-      <thead><tr><th>Grade</th><th>Stability Range</th><th>Meaning</th></tr></thead>
-      <tbody>""" + legend_rows_html + """</tbody>
-    </table>
+    <details>
+      <summary>
+        <h2 style="display:inline">&#128218; Rating Scale</h2>
+        <span class="subtitle" style="display:block;margin:0.4rem 0 0 0">How to read the grade &mdash; click to expand the full scale. The highlighted row is this company's rating.</span>
+      </summary>
+      <table class="data-table" style="margin-top:1rem">
+        <thead><tr><th>Grade</th><th>Stability Range</th><th>Meaning</th></tr></thead>
+        <tbody>""" + legend_rows_html + """</tbody>
+      </table>
+    </details>
   </section>
 
   <section class="card">
-    <h2>&#128269; Key Risk Drivers (SHAP Analysis)</h2>
-    <p class="subtitle">Red bars push toward risk &middot; Green bars push toward stability</p>
+    <h2>&#128269; Key Risk Drivers</h2>
+    <p class="subtitle">The financial indicators with the strongest influence on this company's assessment</p>
     <img src="data:image/png;base64,""" + shap_img + """" style="width:100%;max-width:700px"/>
   </section>
 
   """ + sentiment_html + """
 
   <section class="card">
-    <h2>&#128203; Submitted Financial Data</h2>
-    <p class="subtitle">All metrics provided for this analysis</p>
-    <table class="data-table">
-      <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-      <tbody>""" + data_rows_html + """</tbody>
-    </table>
+    <details>
+      <summary>
+        <h2 style="display:inline">&#128203; Submitted Financial Data</h2>
+        <span class="subtitle" style="display:block;margin:0.4rem 0 0 0">Click to expand the full list of metrics provided for this analysis</span>
+      </summary>
+      <table class="data-table" style="margin-top:1rem">
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>""" + data_rows_html + """</tbody>
+      </table>
+    </details>
   </section>
 
   <section class="card muted">
-    <h2>&#8505;&#65039; Methodology</h2>
     <p style="font-size:0.85rem;color:var(--muted);line-height:1.8">
-      <strong style="color:var(--text)">Financial Model:</strong>
-      """ + model_name + """ trained on the Taiwan Economic Journal bankruptcy
-      dataset (""" + str(model_metrics.get("n_samples", 6819)) + """ companies, """ + str(model_metrics.get("n_features", 95)) + """ financial ratios).
-      Because only ~3% of companies in the data are at risk, raw accuracy is
-      misleading; the honest held-out metrics are:
-      <strong style="color:var(--text)">ROC-AUC """ + str(auc) + """</strong>,
-      at-risk recall """ + str(recall) + """, at-risk precision """ + str(precision) + """,
-      decision threshold """ + str(threshold) + """ (tuned to prioritize catching
-      genuinely at-risk companies). Probabilities are isotonic-calibrated;
-      SHAP TreeExplainer is used for feature attribution.<br/><br/>
-      <strong style="color:var(--text)">Sentiment Model:</strong>
-      Logistic Regression with TF-IDF bigrams trained on Financial PhraseBank
-      v1.0 (AllAgree subset). SMOTE applied for class balancing. Headlines are
-      restricted to the configured news window and weighted by recency
-      (exponential decay).<br/><br/>
       <strong style="color:var(--text)">Disclaimer:</strong>
       This report is generated by an academic machine-learning system and does
       not constitute financial advice.
     </p>
   </section>
 
-  <footer>FinBotX &middot; Academic Financial AI System &middot; """ + year_str + """</footer>
+  <footer>&copy; """ + year_str + """ """ + COPYRIGHT_HOLDER + """ &middot; All rights reserved &middot; Developed by """ + AUTHORS + """</footer>
 </div>
 </body>
 </html>"""

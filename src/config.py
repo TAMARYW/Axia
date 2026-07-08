@@ -1,7 +1,7 @@
 """
 config.py
 ---------
-Central configuration for FinBotX.
+Central configuration for Axia.
 
 Everything tunable lives here so no magic numbers are scattered
 around the codebase:
@@ -36,6 +36,14 @@ TEST_SIZE = 0.2
 # (maximizing F-beta with beta=2, i.e. recall-oriented) and stored in
 # models/model_metrics.json. This value is only the fallback default.
 DEFAULT_RISK_THRESHOLD = 0.20
+
+# ----------------------------------------------------------------------
+# Branding / credits (shown in the report footer)
+# ----------------------------------------------------------------------
+
+# Put the project authors here - shown as "Developed by ..." in the footer.
+AUTHORS = "The Axia Team"
+COPYRIGHT_HOLDER = "Axia"
 
 # ----------------------------------------------------------------------
 # Credit-style rating scale

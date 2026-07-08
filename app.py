@@ -1,7 +1,7 @@
 """
 app.py
 ------
-Streamlit web client for FinBotX.
+Streamlit web client for Axia.
 
 Flow (matches the product spec):
   1. Enter company name (+ optional stock symbol)
@@ -18,6 +18,7 @@ Run:
     streamlit run app.py
 """
 
+import base64
 import os
 import tempfile
 
@@ -31,14 +32,14 @@ from src.report_generator  import ReportGenerator
 from src.column_mapping    import ALL_FEATURES, CRITICAL_FEATURES
 from src.config            import NEWS_WINDOW_DAYS, RATING_DICTIONARY
 
-LOGO_PATH = os.path.join("assets", "logo.png")
+LOGO_PATH = os.path.join("images", "logo.png")
 
 # ------------------------------------------------------------------
 # Page config
 # ------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="FinBotX - Financial Resilience AI",
+    page_title="Axia - Financial Resilience AI",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -53,6 +54,34 @@ st.markdown("""
   @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
   html, body, [class*="css"] { font-family: "DM Sans", sans-serif; }
+
+  /* --- Sidebar on the RIGHT --- */
+  [data-testid="stAppViewContainer"] { flex-direction: row-reverse; }
+  [data-testid="stSidebar"] {
+    border-left: 1px solid #334155;
+    border-right: none;
+  }
+
+  /* --- Centered rounded logo --- */
+  .logo-wrap { text-align: center; margin: 0.8rem 0 1.6rem 0; }
+  .logo-wrap img {
+    max-width: 520px; width: 90%;
+    border-radius: 24px;
+    box-shadow: 0 4px 24px rgba(15, 23, 42, 0.25);
+  }
+
+  /* --- AI note in sidebar --- */
+  .ai-note {
+    background: linear-gradient(135deg, #1e293b, #0f172a);
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+    font-size: 0.8rem;
+    color: #94a3b8;
+    line-height: 1.6;
+    margin-top: 1rem;
+  }
+  .ai-note strong { color: #cbd5e1; }
 
   .main-header {
     background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
@@ -163,23 +192,25 @@ def run_app(engines: dict = None):
     if engines is None:
         engines = load_engines()
 
-    # -- Header with logo ------------------------------------------------
-    col_logo, col_title = st.columns([1, 4])
-    with col_logo:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=170)
-    with col_title:
+    # -- Centered rounded logo --------------------------------------------
+    if os.path.exists(LOGO_PATH):
+        with open(LOGO_PATH, "rb") as f:
+            logo_b64 = base64.b64encode(f.read()).decode()
+        st.markdown(
+            f'<div class="logo-wrap">'
+            f'<img src="data:image/png;base64,{logo_b64}" alt="Axia"/></div>',
+            unsafe_allow_html=True,
+        )
+    else:
         st.markdown("""
         <div class="main-header">
-          <h1>FinBotX</h1>
+          <h1>Axia</h1>
           <p>Financial Resilience Prediction &amp; Market Sentiment AI</p>
         </div>
         """, unsafe_allow_html=True)
 
-    # -- Sidebar ----------------------------------------------------------
+    # -- Sidebar (right side): analysis settings ---------------------------
     with st.sidebar:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, use_container_width=True)
         st.markdown("### Analysis Settings")
 
         company_name = st.text_input(
@@ -193,32 +224,17 @@ def run_app(engines: dict = None):
             help="Improves news search accuracy",
         )
 
-        st.divider()
-        sentiment_source = st.radio(
-            "Sentiment Source",
-            ["Fetch from news feeds (API)", "Upload opinions text file"],
-            help=(f"News feeds return headlines from the last "
-                  f"{NEWS_WINDOW_DAYS} days only, weighted by recency."),
-        )
-
-        opinions_file = None
-        if sentiment_source.startswith("Upload"):
-            opinions_file = st.file_uploader(
-                "Opinions file (.txt, one opinion per line)", type=["txt"]
-            )
-
-        st.divider()
-        m = engines["bankruptcy"].metrics
-        st.markdown(f"""
-        <div style="font-size:0.78rem;color:#64748b;line-height:1.7">
-        <strong style="color:#94a3b8">Model Info (held-out test set)</strong><br/>
-        Financial: {m.get('model', 'Calibrated XGBoost')}<br/>
-        ROC-AUC: {m.get('roc_auc', '-')}<br/>
-        At-risk recall: {m.get('recall_at_risk', '-')}<br/>
-        At-risk precision: {m.get('precision_at_risk', '-')}<br/>
-        Decision threshold: {m.get('decision_threshold', '-')}<br/><br/>
-        Sentiment: Logistic Regression + TF-IDF<br/>
-        News window: last {NEWS_WINDOW_DAYS} days
+        st.markdown("""
+        <div class="ai-note">
+          <strong>Powered by AI</strong><br/>
+          Axia is driven by artificial-intelligence and machine-learning
+          algorithms that analyze financial indicators and market sentiment
+          to assess a company's financial resilience.
+        </div>
+        <div style="margin-top: 1.2rem; padding: 0 0.5rem; font-size: 0.8rem; color: #94a3b8; text-align: center; line-height: 1.5;">
+          © All rights reserved.<br/>
+          Developed by the Axia Team:<br/>
+          <strong style="color: #0a1128;">Tamar Waiss & Rina Kimmel</strong>
         </div>
         """, unsafe_allow_html=True)
 
@@ -264,6 +280,31 @@ def run_app(engines: dict = None):
                 )
         except Exception as e:
             st.error(f"Error reading file: {e}")
+
+    # -- Sentiment source (below the Excel upload) ---------------------------
+    st.markdown("#### Sentiment Source")
+    sentiment_source = st.radio(
+        "How should market sentiment be collected?",
+        ["Fetch from news feeds (API)", "Upload opinions text file"],
+        help=(f"News feeds return headlines from the last "
+              f"{NEWS_WINDOW_DAYS} days only, weighted by recency."),
+        horizontal=True,
+    )
+
+    opinions_file = None
+    if sentiment_source.startswith("Upload"):
+        st.markdown(f"""
+        <div class="note">
+          Upload a plain-text file with <strong>one opinion per line</strong>.
+          Each line is classified as positive / negative / neutral and
+          combined into an aggregate sentiment score.
+        </div>
+        """, unsafe_allow_html=True)
+        opinions_file = st.file_uploader(
+            "Choose opinions file", type=["txt"]
+        )
+        if opinions_file:
+            st.success("Opinions file loaded.")
 
     # -- Run button ----------------------------------------------------------
     st.divider()
@@ -423,7 +464,7 @@ def run_app(engines: dict = None):
     st.download_button(
         label     = "Download Full HTML Report",
         data      = report_html,
-        file_name = f"FinBotX_{company_name.strip().replace(' ', '_')}_Report.html",
+        file_name = f"Axia_{company_name.strip().replace(' ', '_')}_Report.html",
         mime      = "text/html",
     )
 

@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Entry point for the FinBotX financial analysis system.
+Entry point for the Axia financial analysis system.
 
 Responsibilities:
   - Validate that required data files exist
@@ -25,7 +25,7 @@ from src.report_generator  import ReportGenerator
 def initialize_engines() -> dict:
     """Loads or trains all ML engines; returns ready-to-use instances."""
     print("=" * 52)
-    print("  FinBotX - Financial Resilience AI")
+    print("  Axia - Financial Resilience AI")
     print("=" * 52)
 
     print("\n[1/2] Loading Financial Resilience Engine...")
