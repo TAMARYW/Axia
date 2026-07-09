@@ -67,9 +67,8 @@ LEXICON_NEGATIVE = {
     "underperformed", "pressure", "struggling", "struggles",
 }
 
-MODEL_WEIGHT   = 0.55
-LEXICON_WEIGHT = 0.45
-
+MODEL_WEIGHT = 0.55
+LEXICON_WEIGHT = 1 - MODEL_WEIGHT
 LABEL_THRESHOLD = 0.20
 
 
@@ -82,7 +81,6 @@ class SentimentEngine:
         self.vectorizer_path = os.path.join(model_dir, "sentiment_vectorizer.pkl")
         self.model: LogisticRegression | None   = None
         self.vectorizer: TfidfVectorizer | None = None
-
 
     def train_and_save_model(self) -> bool:
         print("\n[SentimentEngine] Starting NLP training pipeline...")
@@ -143,7 +141,6 @@ class SentimentEngine:
         print("[SentimentEngine] No saved model found - training now...")
         return self.train_and_save_model()
 
-
     @staticmethod
     def _lexicon_polarity(text: str) -> tuple[float, int]:
         """
@@ -196,8 +193,6 @@ class SentimentEngine:
                 elif polarity <= -LABEL_THRESHOLD:
                     final_label = "negative"
                 if final_label != label:
-                    # Label corrected by combined evidence - report its
-                    # strength instead of the (wrong) neutral probability.
                     confidence = round(min(0.5 + abs(polarity) / 2, 0.95), 4)
 
         return {
@@ -210,7 +205,6 @@ class SentimentEngine:
     def analyze_batch(self, texts: list[str]) -> list[dict]:
         """Analyzes a list of texts; results in input order."""
         return [self.analyze_sentiment(t) for t in texts]
-
 
     @staticmethod
     def aggregate_score(results: list[dict],
@@ -266,20 +260,6 @@ class SentimentEngine:
         }
 
 
-
 if __name__ == "__main__":
     engine = SentimentEngine()
     engine.train_and_save_model()
-
-    samples = [
-        "Company reports record profits for the third consecutive quarter.",
-        "Firm faces severe debt crisis and possible bankruptcy filing.",
-        "Market remains stable with moderate trading volumes today.",
-    ]
-    results = engine.analyze_batch(samples)
-    for s, r in zip(samples, results):
-        print(f"\n{s}\n  -> {r['label'].upper()} "
-              f"(confidence {r['confidence']:.0%}, polarity {r['polarity']:+.2f})")
-
-    agg = SentimentEngine.aggregate_score(results, ages_days=[0.1, 1.5, 2.8])
-    print(f"\nAggregate: {agg}")

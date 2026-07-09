@@ -191,11 +191,11 @@ class BankruptcyEngine:
         rating = stability_to_rating(stable_score * 100)
 
         return {
-            "prediction": prediction,
-            "stability_score": round(stable_score, 4),
-            "risk_score": round(risk_score, 4),
-            "rating": rating,
-            "threshold": self.threshold,
+            "prediction":       prediction,
+            "stability_score":  round(stable_score, 4),
+            "risk_score":       round(risk_score, 4),
+            "rating":           rating,
+            "threshold":        self.threshold,
             "top_risk_factors": self._explain_prediction(input_df),
         }
 
