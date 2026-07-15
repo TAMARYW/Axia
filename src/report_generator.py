@@ -10,9 +10,11 @@ Report sections:
   - SHAP bar chart: top features driving the prediction
   - Media sentiment: aggregate recency-weighted score, distribution
     donut, per-headline table, and the exact news date window used
-  - Full table of submitted financial metrics
-  - Methodology with HONEST model metrics (recall / precision / AUC),
-    read dynamically from training - never hard-coded
+  - Collapsible table of submitted financial metrics
+  - Disclaimer and copyright footer
+
+The verdict sentence is derived from the rating (calibrated probability),
+keeping every user-facing element consistent with a single source of truth.
 
 All charts are embedded as base64 PNG - the file has no runtime deps.
 """
@@ -38,7 +40,6 @@ SENTIMENT_COLORS = {
 
 
 class ReportGenerator:
-
 
     def generate(
         self,
@@ -288,16 +289,31 @@ class ReportGenerator:
         now_str      = datetime.now().strftime("%B %d, %Y at %H:%M")
         year_str     = str(datetime.now().year)
 
-        verdict = (
-            "The model classifies this company as <strong>financially stable"
-            "</strong> (rating " + rating + " &mdash; "
-            + rating_info.get("meaning", "") + ")."
-            if pred["prediction"] == 0 else
-            "The model identifies <strong>elevated financial risk</strong> "
-            "(rating " + rating + " &mdash; "
-            + rating_info.get("meaning", "") + "). "
-            "Key indicators suggest potential vulnerability."
-        )
+        # The verdict is derived from the RATING (calibrated probability),
+        # so it can never contradict the badge shown next to it. The tuned
+        # decision threshold remains an evaluation-only concept (it defines
+        # the recall/precision reported at training time) and is not used
+        # for user-facing wording.
+        if rating in ("A+", "A", "A-"):
+            verdict = (
+                "The model classifies this company as <strong>financially "
+                "stable</strong> (rating " + rating + " &mdash; "
+                + rating_info.get("meaning", "") + ")."
+            )
+        elif rating in ("B+", "B"):
+            verdict = (
+                "The model places this company in a <strong>moderate "
+                "stability range</strong> (rating " + rating + " &mdash; "
+                + rating_info.get("meaning", "") + "). "
+                "Further review of the highlighted risk drivers is recommended."
+            )
+        else:
+            verdict = (
+                "The model identifies <strong>elevated financial risk</strong> "
+                "(rating " + rating + " &mdash; "
+                + rating_info.get("meaning", "") + "). "
+                "Key indicators suggest potential vulnerability."
+            )
 
         sentiment_html = self._sentiment_section(
             sentiment_results, sentiment_agg, news_window,
@@ -358,8 +374,8 @@ class ReportGenerator:
     details > summary { cursor:pointer; list-style:none; }
     details > summary::-webkit-details-marker { display:none; }
     details > summary::after { content:"View Table"; float:right; color:var(--muted);
-      font-size:0.8rem; transition:transform 0.2s; }
-    details[open] > summary::after { transform:rotate(180deg); }
+      font-size:0.8rem; }
+    details[open] > summary::after { content:"Hide Table"; }
     footer { text-align:center; color:var(--muted); font-size:0.75rem;
       margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--border); }
     @media (max-width:600px) {
